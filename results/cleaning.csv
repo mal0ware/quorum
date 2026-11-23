@@ -1,0 +1,9 @@
+rule,rows_left
+raw rows coded P or S,4204891
+1 form 4 only,4077057
+2 code matches acquired or disposed,4065261
+"3 dates valid, trade not after filing",4060458
+4 positive shares and price,4037882
+5 common equity titles,4028410
+6 filed by an officer or director,3282460
+"7 one row per insider, side, trade date, public date",1363709

@@ -1,0 +1,13 @@
+test,period,months,estimate,t
+opportunistic buy minus routine buy,pre,77,0.00161379,0.456645
+opportunistic buy minus routine buy,post,160,-0.000845636,-0.347622
+opportunistic buy minus routine buy,all,237,-4.65821e-05,-0.0231759
+opportunistic buy minus opportunistic sell,pre,77,0.00492719,1.20988
+opportunistic buy minus opportunistic sell,post,160,-0.00460566,-2.00245
+opportunistic buy minus opportunistic sell,all,237,-0.00150849,-0.71043
+routine buy minus routine sell,pre,77,0.00320058,0.86142
+routine buy minus routine sell,post,160,-0.00415818,-1.60173
+routine buy minus routine sell,all,237,-0.00176736,-0.812424
+"cluster of buyers: excess over universe, post minus pre",all,269,-0.00158904,-0.606952
+"any buy: excess over universe, post minus pre",all,267,-0.00118852,-0.734449
+"opportunistic buy: excess over universe, post minus pre",all,238,-0.00503728,-1.26406

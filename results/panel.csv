@@ -1,0 +1,9 @@
+item,value
+trading_days,5910
+first_day,2003-01-02
+last_day,2026-06-30
+symbols_with_prices,4443
+issuers_mapped_to_a_symbol,4442
+cleaned_trade_rows,1363709
+spike_closes_dropped,773
+extreme_returns_blanked,322
