@@ -38,6 +38,7 @@ PRICE_FILE = "stock_prices.parquet"
 DIVIDEND_FILE = "stock_dividend_events.parquet"
 TICKER_FILE = "company_tickers.json"
 YIELD_FILE = "daily_treasury_yield.parquet"
+SPLIT_FILE = "stock_split_events.parquet"
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ class Panel:
     months: pd.PeriodIndex
     month_of_day: NDArray[np.int64]  # [days] index into months
     liquid: NDArray[np.bool_]  # [months, stocks]
+    # [months, stocks]: median daily dollar volume in the month before, NaN where not liquid
+    dollar_volume: NDArray[np.float64]
     notes: dict[str, int] = field(default_factory=dict)
 
     def column(self, symbol: str) -> int:
@@ -120,7 +123,10 @@ def build_panel(
     liquid = np.zeros((len(months), len(symbols)), dtype=np.bool_)
     nxt_month = good["m"].to_numpy(dtype=np.int64) + 1
     keep = nxt_month < len(months)
-    liquid[nxt_month[keep], good["c"].to_numpy(dtype=np.int64)[keep]] = True
+    good_col = good["c"].to_numpy(dtype=np.int64)[keep]
+    liquid[nxt_month[keep], good_col] = True
+    dollar_volume = np.full((len(months), len(symbols)), np.nan)
+    dollar_volume[nxt_month[keep], good_col] = good["median"].to_numpy(dtype=np.float64)[keep]
 
     notes = {
         "spike_closes_dropped": int(spike.sum()),
@@ -133,6 +139,7 @@ def build_panel(
         months=months,
         month_of_day=month_of_day,
         liquid=liquid,
+        dollar_volume=dollar_volume,
         notes=notes,
     )
 
@@ -174,6 +181,30 @@ def load_long(prices_dir: Path, symbols: set[str], start: str) -> tuple[pd.DataF
         }
     )
     return px, dv[dv["symbol"].isin(symbols)]
+
+
+def parse_split_factor(text: str) -> float:
+    """``"7:1"`` means seven new shares for one old share, so the factor is 7.0."""
+    new, _, old = str(text).partition(":")
+    try:
+        factor = float(new) / float(old)
+    except (ValueError, ZeroDivisionError):
+        return float("nan")
+    return factor if np.isfinite(factor) and factor > 0 else float("nan")
+
+
+def load_splits(path: Path, symbols: set[str]) -> pd.DataFrame:
+    """Split events for the given symbols: ``symbol``, ``date``, ``factor``."""
+    raw = pd.read_parquet(path)
+    out = pd.DataFrame(
+        {
+            "symbol": raw["symbol"].astype(str),
+            "date": pd.to_datetime(raw["report_date"]),
+            "factor": [parse_split_factor(f) for f in raw["split_factor"]],
+        }
+    )
+    out = out[out["symbol"].isin(symbols)].dropna(subset=["date", "factor"])
+    return out.sort_values(["symbol", "date"]).reset_index(drop=True)
 
 
 def load_monthly_riskfree(path: Path, months: pd.PeriodIndex) -> NDArray[np.float64]:

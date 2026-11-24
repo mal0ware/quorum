@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.figure import Figure
 
-from quorum.events import UNIVERSE
+from quorum.events import CONTROLS, UNIVERSE
 
 PRE_COLOUR = "#1f4e79"
 POST_COLOUR = "#c0504d"
@@ -23,6 +23,77 @@ def _save(fig: Figure, path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=150, metadata={"Software": None})
     plt.close(fig)
+
+
+def estimates(robustness: pd.DataFrame, calendar: pd.DataFrame, horizon: int, out: Path) -> None:
+    """The headline estimate and its 95% interval under each sample and estimator."""
+    picks: list[tuple[str, str, str, str]] = [
+        ("Mean, all priced events", "all priced events", "mean", UNIVERSE),
+        ("Mean against matched controls", "all priced events", "mean", CONTROLS),
+        ("Mean, excluding 2009", "excluding 2009", "mean", UNIVERSE),
+        (
+            "Mean, winsorised at 1%",
+            "all priced events",
+            "mean, winsorised at 1% and 99%",
+            UNIVERSE,
+        ),
+        (
+            "Mean, winsorised at 5%",
+            "all priced events",
+            "mean, winsorised at 5% and 95%",
+            UNIVERSE,
+        ),
+        ("Median", "all priced events", "median", UNIVERSE),
+        ("Mean, reported price reconciled", "reported price reconciled only", "mean", UNIVERSE),
+        ("Mean, 2007 to 2014 only", "2007 to 2014 only", "mean", UNIVERSE),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.6), sharex=True, sharey=True)
+    names: list[str] = []
+    for ax, period, colour in zip(axes, ("pre", "post"), (PRE_COLOUR, POST_COLOUR), strict=True):
+        names = []
+        for label, sample, estimator, bench in picks:
+            row = robustness[
+                (robustness["sample"] == sample)
+                & (robustness["estimator"] == estimator)
+                & (robustness["benchmark"] == bench)
+                & (robustness["period"] == period)
+            ]
+            if len(row) != 1:
+                continue
+            r = row.iloc[0]
+            y = len(names)
+            names.append(label)
+            ax.plot([100 * r["ci_low"], 100 * r["ci_high"]], [y, y], color=colour, lw=1.6)
+            ax.plot(100 * r["estimate"], y, "o", color=colour, ms=5)
+        ax.axvline(0, color=GREY, lw=0.8)
+        ax.set_title(LABELS[period], fontsize=10)
+        ax.set_xlabel(f"Abnormal return over {horizon} trading days, %")
+        cal = calendar[
+            (calendar["portfolio"] == "cluster of buyers") & (calendar["period"] == period)
+        ]
+        if len(cal) == 1:
+            c = cal.iloc[0]
+            ax.text(
+                0.98,
+                0.03,
+                f"Monthly portfolio: {100 * c['excess_universe']:.2f}% a month"
+                f" (t {c['excess_universe_t']:.1f})",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color=GREY,
+            )
+    axes[0].set_yticks(range(len(names)))
+    axes[0].set_yticklabels(names, fontsize=9)
+    axes[0].invert_yaxis()
+    axes[0].set_ylim(len(names) + 0.2, -0.6)
+    fig.suptitle(
+        "After three or more insiders buy: estimates with 95% intervals that allow for"
+        " overlapping windows",
+        fontsize=10.5,
+    )
+    _save(fig, out)
 
 
 def bhar_paths(paths: pd.DataFrame, study: pd.DataFrame, out: Path) -> None:
@@ -43,7 +114,7 @@ def bhar_paths(paths: pd.DataFrame, study: pd.DataFrame, out: Path) -> None:
         ax.errorbar(
             marks["horizon_days"],
             100 * marks["mean_bhar"],
-            yerr=196 * marks["se"],
+            yerr=196 * marks["se_overlap"],
             fmt="o",
             color=colour,
             capsize=3,
@@ -63,7 +134,7 @@ def bhar_paths(paths: pd.DataFrame, study: pd.DataFrame, out: Path) -> None:
     ax.text(
         0.99,
         0.02,
-        "Bars: 95% interval, clustered by entry month",
+        "Bars: 95% interval, allowing for overlapping windows",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -112,4 +183,40 @@ def coverage(sample: pd.DataFrame, out: Path) -> None:
         "Most early clusters cannot be priced: the firms are no longer listed", fontsize=11
     )
     ax.legend(frameon=False)
+    _save(fig, out)
+
+
+def survivorship(bounds: pd.DataFrame, out: Path) -> None:
+    """The all-event mean as the share of missing events assumed to have failed rises."""
+    grid = bounds[bounds["other_missing_events_earn"] == "priced mean"]
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.2), sharey=True)
+    styles = ["-", "--", "-.", ":"]
+    for ax, column, colour, title in zip(
+        axes,
+        ("pre_mean", "post_mean"),
+        (PRE_COLOUR, POST_COLOUR),
+        (LABELS["pre"], LABELS["post"]),
+        strict=True,
+    ):
+        for style, (loss, lines) in zip(
+            styles, grid.groupby("loss_of_a_failed_event", sort=False), strict=False
+        ):
+            lines = lines[lines["share_of_missing_events_failed"] <= 0.2]
+            ax.plot(
+                100 * lines["share_of_missing_events_failed"],
+                100 * lines[column],
+                style,
+                color=colour,
+                lw=1.6,
+                label=f"a failed event loses {-100 * float(str(loss)):.0f}%",
+            )
+        ax.axhline(0, color=GREY, lw=0.8)
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("Share of unpriced clusters assumed to have failed, %")
+        ax.legend(frameon=False, fontsize=8)
+    axes[0].set_ylabel("Implied mean abnormal return, all clusters, %")
+    fig.suptitle(
+        "How few failures among the unpriced clusters would erase the survivors' mean",
+        fontsize=10.5,
+    )
     _save(fig, out)

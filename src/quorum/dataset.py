@@ -9,10 +9,9 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from quorum import clean, edgar, layline, prices
+from quorum import clean, layline, prices
 
 LAYLINE_DIR = "layline"
-EDGAR_DIR = "edgar"
 PRICES_DIR = "prices"
 CACHE_DIR = "cache"
 
@@ -33,38 +32,29 @@ class Inputs:
     panel: prices.Panel
     cik_map: pd.Series
     riskfree: NDArray[np.float64]
+    closes: pd.DataFrame  # symbol, date, close (split-adjusted), for the price check
+    splits: pd.DataFrame  # symbol, date, factor
 
 
-def load_raw(
-    data_dir: Path, use_cache: bool = True, source: str = "layline"
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Raw P and S rows and their reporting persons, cached as parquet after the first read.
-
-    ``source`` is ``"layline"`` (the default, used for the published results) or
-    ``"edgar"`` for quarterly files downloaded with :mod:`quorum.edgar`.
-    """
-    if source not in ("layline", "edgar"):
-        raise ValueError("source must be 'layline' or 'edgar'")
+def load_raw(data_dir: Path, use_cache: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Raw P and S rows and their reporting persons, cached as parquet after the first read."""
     cache = data_dir / CACHE_DIR
-    raw_path = cache / f"raw_trades_{source}.parquet"
-    owner_path = cache / f"raw_owners_{source}.parquet"
+    raw_path = cache / "raw_trades_layline.parquet"
+    owner_path = cache / "raw_owners_layline.parquet"
     if use_cache and raw_path.exists() and owner_path.exists():
         return pd.read_parquet(raw_path), pd.read_parquet(owner_path)
-    if source == "edgar":
-        raw, owners = edgar.read_all(data_dir / EDGAR_DIR)
-    else:
-        folder = data_dir / LAYLINE_DIR
-        raw = layline.read_panel_trades(folder / layline.PANEL_ZIP)
-        owners = layline.read_owners(folder / layline.OWNER_ZIP, set(raw["accessionNumber"]))
+    folder = data_dir / LAYLINE_DIR
+    raw = layline.read_panel_trades(folder / layline.PANEL_ZIP)
+    owners = layline.read_owners(folder / layline.OWNER_ZIP, set(raw["accessionNumber"]))
     cache.mkdir(parents=True, exist_ok=True)
     raw.to_parquet(raw_path)
     owners.to_parquet(owner_path)
     return raw, owners
 
 
-def load_inputs(data_dir: Path, use_cache: bool = True, source: str = "layline") -> Inputs:
+def load_inputs(data_dir: Path, use_cache: bool = True) -> Inputs:
     """Read the insider tables and the price files and build the pipeline inputs."""
-    raw, owners = load_raw(data_dir, use_cache, source)
+    raw, owners = load_raw(data_dir, use_cache)
     cleaned = clean.clean_trades(raw, owners)
 
     price_dir = data_dir / PRICES_DIR
@@ -84,4 +74,6 @@ def load_inputs(data_dir: Path, use_cache: bool = True, source: str = "layline")
         panel=panel,
         cik_map=cik_map[cik_map.isin(panel.symbols)],
         riskfree=riskfree,
+        closes=px[["symbol", "date", "close"]].reset_index(drop=True),
+        splits=prices.load_splits(price_dir / prices.SPLIT_FILE, symbols),
     )

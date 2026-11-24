@@ -67,22 +67,13 @@ def make(
             if third < split:
                 boost[third + 2 : third + 2 + DRIFT_DAYS, i] += DRIFT_PER_DAY
 
-    trades = pd.DataFrame(rows, columns=["issuer_cik", "insider_cik", "side", "t", "p"])
-    trades = trades.assign(
-        trade_date=cal[trades["t"].to_numpy(dtype=np.int64)],
-        public_date=cal[trades["p"].to_numpy(dtype=np.int64)],
-        shares=1000.0,
-        value=20_000.0,
-    )
-    keys = ["issuer_cik", "insider_cik", "side", "trade_date", "public_date"]
-    trades = trades.groupby(keys, as_index=False, sort=True)[["shares", "value"]].sum()
-
     market = rng.normal(0.0003, 0.01, n_days)
     beta = rng.uniform(0.6, 1.4, n_stocks)
     ret = beta[None, :] * market[:, None] + rng.normal(0.0, 0.02, (n_days, n_stocks)) + boost
     names = [f"S{i:03d}" for i in range(n_stocks)]
     frames = []
     dividends = []
+    closes = np.empty((n_days, n_stocks))
     for i, name in enumerate(names):
         pays = i % 2 == 0
         close = np.empty(n_days)
@@ -93,8 +84,24 @@ def make(
             close[t] = level
             if cash:
                 dividends.append((name, cal[t], cash))
+        closes[:, i] = close
         volume = 50.0 if i >= n_stocks - N_ILLIQUID else 100_000.0
         frames.append(pd.DataFrame({"symbol": name, "date": cal, "close": close, "volume": volume}))
+    trades = pd.DataFrame(rows, columns=["issuer_cik", "insider_cik", "side", "t", "p"])
+    trades = trades.assign(
+        trade_date=cal[trades["t"].to_numpy(dtype=np.int64)],
+        public_date=cal[trades["p"].to_numpy(dtype=np.int64)],
+        shares=1000.0,
+        # Reported at the close of the trade day, so the price check has something to agree with.
+        value=1000.0
+        * closes[
+            trades["t"].to_numpy(dtype=np.int64),
+            trades["issuer_cik"].to_numpy(dtype=np.int64) - 1000,
+        ],
+    )
+    keys = ["issuer_cik", "insider_cik", "side", "trade_date", "public_date"]
+    trades = trades.groupby(keys, as_index=False, sort=True)[["shares", "value"]].sum()
+
     for name, scale in (("SPY", 1.0), ("IWM", 1.1)):
         index = 100.0 * np.cumprod(1.0 + scale * market)
         frames.append(pd.DataFrame({"symbol": name, "date": cal, "close": index, "volume": 1e7}))
@@ -110,4 +117,6 @@ def make(
         panel=panel,
         cik_map=cik_map,
         riskfree=np.full(len(panel.months), 0.0002),
+        closes=px[["symbol", "date", "close"]],
+        splits=pd.DataFrame({"symbol": [], "date": pd.to_datetime([]), "factor": []}),
     )

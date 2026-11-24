@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(scope="module")
 def results(synthetic_inputs: Inputs) -> pipeline.Results:
     i = synthetic_inputs
-    return pipeline.run(i.trades, i.panel, i.cik_map, i.riskfree)
+    return pipeline.run(i.trades, i.panel, i.cik_map, i.riskfree, closes=i.closes, splits=i.splits)
 
 
 def headline(results: pipeline.Results, period: str, benchmark: str = "universe") -> pd.Series:
@@ -39,9 +39,9 @@ def test_planted_drift_is_found_before_the_split_and_not_after(results: pipeline
     # pure cluster earns about 1.0015**62 - 1 = 9.7%. Chance clusters dilute the mean.
     planted = (1 + synthetic.DRIFT_PER_DAY) ** 62 - 1
     assert 0.6 * planted < pre["mean_bhar"] < 1.05 * planted
-    assert pre["t"] > 4
+    assert pre["t_overlap"] > 4
     assert abs(post["mean_bhar"]) < 0.03
-    assert abs(post["t"]) < 2.5
+    assert abs(post["t_overlap"]) < 2.5
     assert pre["events"] > 100 and post["events"] > 100
 
     diff = results.tables["event_study_post_minus_pre"]
@@ -51,7 +51,7 @@ def test_planted_drift_is_found_before_the_split_and_not_after(results: pipeline
         & (diff["horizon_days"] == 63)
     ].iloc[0]
     assert row["post_minus_pre"] == pytest.approx(post["mean_bhar"] - pre["mean_bhar"])
-    assert row["t"] < -3
+    assert row["t_overlap"] < -3
 
 
 def test_the_effect_shows_against_every_benchmark(results: pipeline.Results) -> None:
@@ -114,16 +114,20 @@ def test_sample_table_adds_up(results: pipeline.Results) -> None:
 
 def test_variants_include_the_main_specification(results: pipeline.Results) -> None:
     variants = results.tables["variants"]
-    main = variants[(variants["min_insiders"] == 3) & (variants["window_days"] == 30)]
+    main = variants[
+        (variants["min_insiders"] == 3)
+        & (variants["window_days"] == 30)
+        & (variants["benchmark"] == "universe")
+    ]
     assert main.set_index("period").loc["pre", "mean_bhar"] == pytest.approx(
         headline(results, "pre")["mean_bhar"]
     )
-    assert len(variants) == 2 * (1 + len(pipeline.Config().variants))
+    assert len(variants) == 2 * 2 * (1 + len(pipeline.Config().variants))
 
 
 def test_running_twice_gives_identical_tables(results: pipeline.Results) -> None:
     i = synthetic.make(seed=0)
-    again = pipeline.run(i.trades, i.panel, i.cik_map, i.riskfree)
+    again = pipeline.run(i.trades, i.panel, i.cik_map, i.riskfree, closes=i.closes, splits=i.splits)
     assert set(again.tables) == set(results.tables)
     for name, table in results.tables.items():
         pd.testing.assert_frame_equal(table, again.tables[name], check_exact=True)
@@ -141,7 +145,7 @@ def test_reproduce_fast_writes_the_same_files_twice(tmp_path: Path) -> None:
         )
         outputs.append(out)
     names = sorted(p.name for p in outputs[0].iterdir())
-    assert "fig1_after_a_cluster.png" in names and "event_study.csv" in names
+    assert "fig1_estimates.png" in names and "event_study.csv" in names
     assert names == sorted(p.name for p in outputs[1].iterdir())
     for name in names:
         if name.endswith(".csv"):

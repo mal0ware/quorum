@@ -105,18 +105,6 @@ def test_a_stock_that_stops_trading_is_carried_at_its_last_price() -> None:
     np.testing.assert_allclose(wealth[:, 0], [1.1, 1.21, 1.331, 1.331, 1.331, 1.331], rtol=1e-6)
 
 
-def test_clustered_mean_matches_a_hand_calculation() -> None:
-    x = np.array([1.0, 3.0, 2.0, 6.0])
-    groups = np.array([0, 0, 1, 1])
-    mean, se, n = events.clustered_mean(x, groups)
-    # mean 3; cluster sums of deviations: (-2 + 0) and (-1 + 3); se = sqrt(4 + 4) / 4
-    assert (mean, n) == (3.0, 4)
-    assert se == pytest.approx(np.sqrt(8.0) / 4.0)
-    # One observation per cluster reduces to the usual sandwich: sqrt(sum e^2) / n.
-    _, se_single, _ = events.clustered_mean(x, np.arange(4))
-    assert se_single == pytest.approx(np.sqrt(((x - 3.0) ** 2).sum()) / 4.0)
-
-
 def test_winsorized_mean_pulls_in_the_tails() -> None:
     x = np.concatenate([np.zeros(98), [100.0, -100.0]])
     assert events.winsorized_mean(x, tail=0.02) == pytest.approx(0.0, abs=1e-9)

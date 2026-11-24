@@ -22,6 +22,15 @@ stock in the panel, formed at the same entry close:
 
 It is drawn from the same price file as the event stocks, so it carries the same
 survivorship as they do.
+
+The matched controls are a tighter version of the same idea. For each event,
+take the stocks that are liquid in the entry month, have a return on the entry
+day, and had no cluster of their own within :data:`CONTROL_EXCLUSION_DAYS`
+calendar days either side of the event. Of those, the :data:`N_CONTROLS` nearest
+in log dollar volume (the median daily dollar volume of the month before, the
+only size measure in the data) form an equal-weight buy-and-hold portfolio.
+Every control comes from the same price file, so it met the same condition as
+the event stock: it was still listed when the file was built.
 """
 
 from __future__ import annotations
@@ -37,6 +46,9 @@ from quorum.prices import Panel
 Float = NDArray[np.float64]
 
 UNIVERSE = "universe"
+CONTROLS = "matched_controls"
+N_CONTROLS = 5
+CONTROL_EXCLUSION_DAYS = 182
 
 
 def entry_index(dates: pd.DatetimeIndex, public_dates: pd.Series) -> NDArray[np.int64]:
@@ -103,12 +115,78 @@ class EventReturns:
         return self.stock - self.benchmarks[benchmark]
 
 
+def pick_controls(
+    panel: Panel,
+    col: NDArray[np.int64],
+    entry: NDArray[np.int64],
+    event_days: NDArray[np.datetime64],
+    cluster_days: dict[int, NDArray[np.datetime64]],
+) -> NDArray[np.int64]:
+    """Columns of the matched controls for each event: an [events, N_CONTROLS] table.
+
+    ``cluster_days`` maps a panel column to the sorted days on which that stock
+    had a cluster. Missing controls are -1. Ties in distance go to the lower column.
+    """
+    out = np.full((len(col), N_CONTROLS), -1, dtype=np.int64)
+    span = np.timedelta64(CONTROL_EXCLUSION_DAYS, "D")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        log_dv = np.log(panel.dollar_volume)
+    for i in range(len(col)):
+        month = panel.month_of_day[entry[i]]
+        target = log_dv[month, col[i]]
+        ok = panel.liquid[month] & np.isfinite(panel.ret[entry[i]]) & np.isfinite(log_dv[month])
+        ok[col[i]] = False
+        candidates = np.flatnonzero(ok)
+        if not np.isfinite(target) or len(candidates) == 0:
+            continue
+        order = candidates[np.argsort(np.abs(log_dv[month, candidates] - target), kind="stable")]
+        found = 0
+        for c in order:
+            days = cluster_days.get(int(c))
+            if days is not None:
+                k = int(np.searchsorted(days, event_days[i] - span, side="left"))
+                if k < len(days) and days[k] <= event_days[i] + span:
+                    continue
+            out[i, found] = c
+            found += 1
+            if found == N_CONTROLS:
+                break
+    return out
+
+
+def control_paths(
+    wealth: Float, controls: NDArray[np.int64], entry: NDArray[np.int64], horizon: int
+) -> Float:
+    """Equal-weight buy-and-hold value of each event's controls, h = 0..horizon.
+
+    An event with no controls gets NaN. Days past the end of the data are NaN.
+    """
+    n_days = len(wealth)
+    idx = entry[:, None] + np.arange(horizon + 1)[None, :]
+    inside = idx < n_days
+    safe = np.where(inside, idx, 0)
+    total = np.zeros(idx.shape)
+    count = np.zeros(len(entry))
+    for j in range(controls.shape[1]):
+        c = controls[:, j]
+        have = c >= 0
+        cs = np.maximum(c, 0)
+        path = wealth[safe, cs[:, None]] / wealth[np.minimum(entry, n_days - 1), cs][:, None]
+        total += np.where(have[:, None], path, 0.0)
+        count += have
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out: Float = total / count[:, None]
+    out[~inside] = np.nan
+    return out
+
+
 def measure(
     events: pd.DataFrame,
     panel: Panel,
     wealth: Float,
     universe: Float,
     benchmark_symbols: dict[str, str],
+    clusters: pd.DataFrame | None = None,
 ) -> EventReturns:
     """Measure value paths for the events that can be priced.
 
@@ -117,6 +195,10 @@ def measure(
     day (so the entry close exists). The returned ``events`` holds the kept rows
     with ``entry_date`` added. ``universe`` comes from :func:`universe_table` and
     sets the horizon.
+
+    ``clusters`` lists every detected cluster (``symbol`` and ``event_date``),
+    priced or not. When given, the matched-control benchmark is added and no
+    control is a stock with a cluster of its own near the event.
     """
     horizon = universe.shape[1] - 1
     lookup = {s: i for i, s in enumerate(panel.symbols)}
@@ -139,26 +221,18 @@ def measure(
         stock[rows] = value_paths(wealth[:, c], entry[rows], horizon)
 
     benchmarks = {UNIVERSE: universe[entry]}
+    if clusters is not None:
+        cluster_days: dict[int, NDArray[np.datetime64]] = {}
+        known = clusters[clusters["symbol"].isin(lookup)]
+        for symbol, days in known.groupby("symbol", sort=False)["event_date"]:
+            cluster_days[lookup[str(symbol)]] = np.sort(days.to_numpy(dtype="datetime64[D]"))
+        event_days = kept["event_date"].to_numpy(dtype="datetime64[D]")
+        controls = pick_controls(panel, col, entry, event_days, cluster_days)
+        benchmarks[CONTROLS] = control_paths(wealth, controls, entry, horizon)
+        kept["n_controls"] = (controls >= 0).sum(axis=1)
     for name, symbol in benchmark_symbols.items():
         benchmarks[name] = value_paths(wealth[:, lookup[symbol]], entry, horizon)
     return EventReturns(events=kept, stock=stock, benchmarks=benchmarks)
-
-
-def clustered_mean(x: Float, groups: NDArray[np.int64]) -> tuple[float, float, int]:
-    """Mean of ``x`` with a standard error clustered on ``groups``.
-
-    ``se = sqrt(sum_g (sum_{i in g} (x_i - mean))^2) / n``: the cluster-robust
-    sandwich for a regression on a constant, with no small-sample correction.
-    """
-    good = np.isfinite(x)
-    x, groups = x[good], groups[good]
-    n = len(x)
-    if n == 0:
-        return float("nan"), float("nan"), 0
-    mean = float(x.mean())
-    sums = pd.Series(x - mean).groupby(groups).sum().to_numpy(dtype=np.float64)
-    se = float(np.sqrt((sums**2).sum()) / n)
-    return mean, se, n
 
 
 def winsorized_mean(x: Float, tail: float = 0.01) -> float:
