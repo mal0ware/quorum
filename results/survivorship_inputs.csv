@@ -1,0 +1,9 @@
+item,pre,post
+clusters_above_price_floor,7549,7234
+issuer_in_price_file,2494,4323
+issuer_not_in_price_file,5055,2911
+priced,1706,3205
+share_of_in_file_clusters_priced,0.684042,0.741383
+missing_assumed_to_pass_the_screen,3457.83,2158.17
+priced_with_a_full_window,1706,3205
+mean_bhar_priced,0.0276642,0.00411997
